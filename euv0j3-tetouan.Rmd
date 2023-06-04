@@ -39,6 +39,7 @@ library(urltools)
 library(magrittr)
 library(lubridate)
 library(janitor)
+library(tseries)
 ```
 
 # Bevezetés
@@ -97,21 +98,25 @@ data
 
 # Új változók létrehozása
 
-## Idő bővítés
+## Teljes áramfelhasználás
 
 ```{r}
-
+data <- data %>%
+  mutate(data, zone_total = zone_1 + zone_2 + zone_3)
 ```
+
+## Idő bővítés
 
 ```{r}
 data <- data %>%
   timetk::tk_augment_timeseries_signature(date_time) %>%
   select(
     -matches(
-      "(half)|(wday)|(mday)|(qday)|(mday)|(yday)|(mweek)|(xts)|(second)|(minute)|(iso)|(num)|(hour12)|(am.pm)|(week\\d)|(mday7)"
+      "(half)|(mday)|(qday)|(mday)|(yday)|(mweek)|(xts)|(second)|(minute)|(iso)|(num)|(hour12)|(am.pm)|(week\\d)|(mday7)"
     )
   ) %>%
-  select(-diff)
+  select(-diff,-wday) %>%
+  mutate(hour = factor(hour, ordered = TRUE))
 ```
 
 # Adatok vizsgálata
@@ -177,6 +182,44 @@ data %>%
   )
 ```
 
+```{r}
+boxplot(data$zone_1, main = "Zone 1", ylab = "Value")
+boxplot(data$zone_2, main = "Zone 2", ylab = "Value")
+boxplot(data$zone_3, main = "Zone 3", ylab = "Value")
+boxplot(data$zone_total, main = "Zone Total", ylab = "Value")
+```
+
+```{r}
+data %>% 
+  select(hour, zone_1,zone_2,zone_3) %>% 
+  pivot_longer(-hour) %>% 
+  ggplot(aes(hour, value)) +
+  geom_boxplot(aes(color = name),
+               outlier.alpha = 0.1) -> p1
+
+data %>% 
+  select(wday.lbl, zone_1,zone_2,zone_3) %>% 
+  pivot_longer(-wday.lbl) %>% 
+  ggplot(aes(wday.lbl, value)) +
+  geom_boxplot(aes(color = name),
+               outlier.alpha = 0.1) -> p2
+
+data %>% 
+  select(month.lbl, zone_1,zone_2,zone_3) %>% 
+  pivot_longer(-month.lbl) %>% 
+  ggplot(aes(month.lbl, value)) +
+  geom_boxplot(aes(color = name),
+               outlier.alpha = 0.1) -> p3
+
+p1/ p2 / p3
+```
+
+```{r}
+ggplot(data, aes(x = temperature, y = zone_1)) +
+  geom_point() +
+  labs(title = "Temperature vs Zone 1 Power Consumption")
+```
+
 ## Decompose
 
 ```{r}
@@ -220,16 +263,110 @@ plot(decompose_ts(data$general_diffuse_flows))
 plot(decompose_ts(data$diffuse_flows))
 ```
 
-```{r, warning = FALSE}
-
-```
-
-```{r, warning = FALSE}
-
-```
-
-```{r, warning = FALSE}
-
-```
-
 # Prediktív elemzés
+
+## Zone 1
+
+az áramfogyasztás előrejelzése idősor elemzéssel
+
+Hozzuk létre az idősorunkat
+
+```{r}
+zone_1_ts <- ts(data$zone_1, frequency = 144)
+```
+
+Elemezzük, hogy az adatunk stacionárius-e
+
+```{r}
+adf_test <- adf.test(zone_1_ts)
+print(adf_test$p.value)
+```
+
+Mivel a p érték kevesebb, mint 0.05, ezért a nullhipotézist elvethetjük és elfogadhatjuk, hogy az adatunk stacionárius
+
+```{r}
+acf(zone_1_ts)
+pacf(zone_1_ts)
+```
+
+```{r}
+library(forecast)
+fit <- auto.arima(zone_1_ts, seasonal = TRUE)
+summary(fit)
+```
+
+```{r}
+forecast_values <- forecast(fit, h = 77*2*5)
+
+lasts <- tail(zone_1_ts, 77*2*10)
+
+# Create a data frame for the historical data
+history_df <- data.frame(Time = time(lasts), Value = as.numeric(lasts), Lo95 = NA, Hi95 = NA, Type = "Historical")
+
+# Create a data frame for the forecasted data
+forecast_df <- data.frame(Time = time(forecast_values$mean), 
+                          Value = as.numeric(forecast_values$mean), 
+                          Lo95 = as.numeric(forecast_values$lower[,2]),
+                          Hi95 = as.numeric(forecast_values$upper[,2]),
+                          Type = "Forecast")
+
+# Ensure that 'Time' columns are of the same class
+history_df$Time <- as.numeric(history_df$Time)
+forecast_df$Time <- as.numeric(forecast_df$Time)
+
+# Combine the historical and forecasted data into a single data frame
+combined_df <- rbind(history_df, forecast_df)
+
+# Create a ggplot of the historical and forecasted values
+ggplot() +
+  geom_line(data = combined_df, aes(x = Time, y = Value, color = Type)) +
+  geom_line(data = forecast_df, aes(x = Time, y = Lo95), linetype = "dotted", color = "blue") +
+  geom_line(data = forecast_df, aes(x = Time, y = Hi95), linetype = "dotted", color = "blue") +
+  scale_color_manual(values = c("Historical" = "black", "Forecast" = "red")) +
+  labs(title = "ARIMA Forecast", x = "Time", y = "Value") +
+  theme_minimal()
+
+
+```
+
+## Total (1+2+3)
+
+```{r}
+zone_ts <- ts(data$zone_total, frequency = 144)
+
+fit_zone <- auto.arima(zone_ts, seasonal = TRUE)
+summary(fit_zone)
+
+```
+
+```{r}
+forecast_values <- forecast(fit_zone, h = 77*2*5)
+
+lasts <- tail(zone_ts, 77*2*10)
+
+# Create a data frame for the historical data
+history_df <- data.frame(Time = time(lasts), Value = as.numeric(lasts), Lo95 = NA, Hi95 = NA, Type = "Historical")
+
+# Create a data frame for the forecasted data
+forecast_df <- data.frame(Time = time(forecast_values$mean), 
+                          Value = as.numeric(forecast_values$mean), 
+                          Lo95 = as.numeric(forecast_values$lower[,2]),
+                          Hi95 = as.numeric(forecast_values$upper[,2]),
+                          Type = "Forecast")
+
+# Ensure that 'Time' columns are of the same class
+history_df$Time <- as.numeric(history_df$Time)
+forecast_df$Time <- as.numeric(forecast_df$Time)
+
+# Combine the historical and forecasted data into a single data frame
+combined_df <- rbind(history_df, forecast_df)
+
+# Create a ggplot of the historical and forecasted values
+ggplot() +
+  geom_line(data = combined_df, aes(x = Time, y = Value, color = Type)) +
+  geom_line(data = forecast_df, aes(x = Time, y = Lo95), linetype = "dotted", color = "blue") +
+  geom_line(data = forecast_df, aes(x = Time, y = Hi95), linetype = "dotted", color = "blue") +
+  scale_color_manual(values = c("Historical" = "black", "Forecast" = "red")) +
+  labs(title = "ARIMA Forecast", x = "Time", y = "Value") +
+  theme_minimal()
+```
