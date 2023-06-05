@@ -40,11 +40,12 @@ library(magrittr)
 library(lubridate)
 library(janitor)
 library(tseries)
+library(performance)
 ```
 
 # Bevezetés
 
-Az adatsor Tetouan City 2017-es áramfogyasztásának alakulását írja le 10 percenkénti bontásban 3 zónára.
+Az adatsor Tetouan City 2017-es áramfogyasztásának alakulását írja le 10 percenkénti bontásban 3 zónára. Ebben a notebookban előkészítem az adatot elemzésre, aztán elemzem és végül egy idősoros előrejelzést fogok csinálni.
 
 ## Hivatkozás
 
@@ -68,6 +69,8 @@ az áramfogyasztás előrejelzése idősor elemzéssel
 
 # Adatok betöltése
 
+Használjuk a linket githubról, hogy ne kelljen a lokális fájllal dolgozni.
+
 ```{r, warning = FALSE}
 url <-
   "https://raw.githubusercontent.com/fzksmrk/adatbanyaszati-beadando-2/main/data.csv"
@@ -90,6 +93,10 @@ data
 
 ```
 
+A janitor csomag használatával nevezzük át az oszlopokat, hogy azok "snake" formátumúak legyenek.
+
+Szintén egyszerűsítsük (rövidítsük) az áram felhasználására vonatkozó oszlop nevét.
+
 ```{r}
 data <- janitor::clean_names(data)
 data <- dplyr::rename(data,"zone_1" = "zone_1_power_consumption","zone_2" = "zone_2_power_consumption","zone_3" = "zone_3_power_consumption")
@@ -100,12 +107,16 @@ data
 
 ## Teljes áramfelhasználás
 
+Adjuk össze a 3 zóna áramfelhasználását, hogy megkapjuk a város teljes áramfelhasználását.
+
 ```{r}
 data <- data %>%
   mutate(data, zone_total = zone_1 + zone_2 + zone_3)
 ```
 
 ## Idő bővítés
+
+Idősoros elemzésnél fontos lehet, hogy a dátum további dimenzióit is megvizsgáljuk (például a hét napjait), ezért a timetk csomaggal kibővítjük az idősor dimenzióit. Ami nem fontos most, azokat eltávolítom.
 
 ```{r}
 data <- data %>%
@@ -166,6 +177,8 @@ data %>%
 p1 / p2 / p3 / p4
 ```
 
+Jelentős változást láthatunk a hőmérséklet változásában augusztus környékén.
+
 ## Zónák energia felhasználása
 
 ```{r, warning = FALSE}
@@ -182,12 +195,53 @@ data %>%
   )
 ```
 
+A zone 3-ban kiugrást láthatunk augusztus környékén, amit a kimagasló hőmérsékletnek tudnék be.
+
 ```{r}
-boxplot(data$zone_1, main = "Zone 1", ylab = "Value")
-boxplot(data$zone_2, main = "Zone 2", ylab = "Value")
-boxplot(data$zone_3, main = "Zone 3", ylab = "Value")
-boxplot(data$zone_total, main = "Zone Total", ylab = "Value")
+ggplot(data, aes(x = temperature, y = zone_3)) + 
+    geom_point(aes(color = month.lbl), alpha = 0.5) + 
+    labs(title = "Temperature vs Zone 3 Power Consumption", 
+         x = "Temperature", 
+         y = "Zone 3 Power Consumption"
+         )
 ```
+
+Láthatjuk, hogy a nyári hónapok tényleg magasabb hőmérséklettel és magasabb energie felhasználással is jártak
+
+és láthatjuk, hogy a zone 1-ben van egy "váratlan" csökkenés június környékén.
+
+```{r}
+data %>% 
+  filter(date_time > "2017-06-20", date_time < "2017-07-02") %>% 
+  select(date_time, zone_1) %>% 
+  pivot_longer(-date_time) %>% 
+  ggplot(aes(date_time, value)) +
+  geom_vline(xintercept = as.POSIXct("2017-06-26"), color = "black", lty = 2) +
+  geom_line(aes(color = name)) +
+  scale_y_continuous(labels = scales::label_number_si()) +
+  labs(
+    x = NULL,
+    y = "Power",
+    color = "Zone"
+  )
+```
+
+Vajon ez miért történhetett - nézzük meg a hőmérséklet változást
+
+```{r}
+data %>% 
+  filter(date_time > "2017-06-20", date_time < "2017-07-02") %>% 
+  select(date_time, temperature) %>% 
+  pivot_longer(-date_time) %>% 
+  ggplot(aes(date_time, value)) +
+  geom_vline(xintercept = as.POSIXct("2017-06-26"), color = "black", lty = 2) +
+  geom_line(aes(color = name)) +
+  scale_y_continuous(labels = scales::label_number_si())
+```
+
+Érdekes, hogy a hőmérsékletben 2 nappal korábban láthatunk változást, lehet érdemes lenne megvizsgálni, hogy van-e összefüggés. (máskor)
+
+És nézzük a trendeket:
 
 ```{r}
 data %>% 
@@ -214,12 +268,6 @@ data %>%
 p1/ p2 / p3
 ```
 
-```{r}
-ggplot(data, aes(x = temperature, y = zone_1)) +
-  geom_point() +
-  labs(title = "Temperature vs Zone 1 Power Consumption")
-```
-
 ## Decompose
 
 ```{r}
@@ -229,38 +277,20 @@ decompose_ts <- function(series, freq = 144) {
 }
 ```
 
-
-
 ```{r, warning = FALSE}
 plot(decompose_ts(data$zone_1))
 ```
 
-```{r, warning = FALSE}
-plot(decompose_ts(data$zone_2))
-```
+A dekompozíció 3 komponensre bontja az idősorunkat: trend / seasonal / random
+
+Talán a randomban látható nyár közeli kitérést emelném ki, mint érdekesség.
 
 ```{r, warning = FALSE}
-plot(decompose_ts(data$zone_3))
+plot(decompose_ts(data$zone_total))
 ```
 
 ```{r, warning = FALSE}
 plot(decompose_ts(data$temperature))
-```
-
-```{r, warning = FALSE}
-plot(decompose_ts(data$wind_speed))
-```
-
-```{r, warning = FALSE}
-plot(decompose_ts(data$humidity))
-```
-
-```{r, warning = FALSE}
-plot(decompose_ts(data$general_diffuse_flows))
-```
-
-```{r, warning = FALSE}
-plot(decompose_ts(data$diffuse_flows))
 ```
 
 # Prediktív elemzés
@@ -325,8 +355,6 @@ ggplot() +
   scale_color_manual(values = c("Historical" = "black", "Forecast" = "red")) +
   labs(title = "ARIMA Forecast", x = "Time", y = "Value") +
   theme_minimal()
-
-
 ```
 
 ## Total (1+2+3)
@@ -338,6 +366,12 @@ fit_zone <- auto.arima(zone_ts, seasonal = TRUE)
 summary(fit_zone)
 
 ```
+
+p:4
+
+d:0
+
+q:0
 
 ```{r}
 forecast_values <- forecast(fit_zone, h = 77*2*5)
@@ -370,3 +404,58 @@ ggplot() +
   labs(title = "ARIMA Forecast", x = "Time", y = "Value") +
   theme_minimal()
 ```
+
+## timetk
+
+Hasonló elemzés a timetk csomag használatával
+
+```{r}
+data %>% 
+  select(date_time,
+         month.lbl,
+         temperature,
+         day,
+         hour,
+         week,
+         zone_total) %>% 
+  pivot_longer(-date_time:-week, names_to = "zone") %>% 
+  group_by(zone) %>%
+  plot_time_series_regression(
+    .date_var = date_time,
+    value ~ month.lbl+  temperature + as.factor(day) + hour + week + lag(value) ,
+    .show_summary = TRUE,
+    .interactive = FALSE
+  ) -> p
+
+p
+```
+
+nagyítsunk bele, hogy lássuk ahogyan a tényleges és a becsült értékek valójában eltérnek néhol, de "egész jól illeszkednek"
+
+```{r}
+p +
+  scale_x_datetime(limits = c(as.POSIXct("2017-06-25 00:00:00"),
+                              as.POSIXct("2017-06-30 00:00:00"))) +
+  labs(title = "Power vs Prediction, Zoomed In")
+
+```
+
+```{r}
+data <- data %>% 
+  mutate(
+    month.lbl = as.character(month.lbl),
+    day = as.factor(day),
+    hour = as.character(hour)
+  )
+mod_base <- lm(
+  formula = zone_1 ~ month.lbl + temperature + day + hour + week + lag(zone_1),
+  data = data
+)
+
+performance::model_performance(mod_base)
+
+```
+
+# Konklúzió
+
+Láthatjuk, hogy milyen jól viseledik ez az idősor. A továbbiakban érdemes lehetne megvizsgálni, hogy hogyan lehet az összefüggést feltárni a hőmérséklet és az áramfogyasztás között. A feltételezésem, hogy a magas hőmérsékletben sok áramot fogyasztanak a légkondícionálásra. Érdekes lehet továbbá kibővíteni az elemzést a személyek számával, hogyan ki hol tevékenykedik a nap során stb.
